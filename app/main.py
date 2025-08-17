@@ -195,29 +195,78 @@ def login_for_access_token(username: Annotated[str, Form()], password: Annotated
 
 @app.get("/recommendations", response_model=RecommendationResponse)
 def get_recommendations(user_id: int, latitude: float, longitude: float, db: Session = Depends(get_db)):
-    user = db.execute(text("SELECT * FROM users WHERE user_id = :uid"), {"uid": user_id}).first()
-    if not user: raise HTTPException(status_code=404, detail="User not found")
-    user_prefs_dict = {key: getattr(user, key, 0) for key in PreferenceVector.model_fields.keys()}
+    # ユーザー情報を取得
+    user_result = db.execute(text("SELECT * FROM users WHERE user_id = :uid"), {"uid": user_id}).first()
+    if not user_result:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    # ユーザーの嗜好ベクトルを生成
+    user_prefs_dict = {key: getattr(user_result, key, 0) for key in PreferenceVector.model_fields.keys()}
     user_vector = np.array(list(user_prefs_dict.values()))
-    suppliers = db.execute(text("SELECT * FROM suppliers")).fetchall()
-    recommendations = []
-    for supplier in suppliers:
-        supplier_location = json.loads(supplier.location) if isinstance(supplier.location, str) else supplier.location
-        if not supplier_location: continue
-        distance = haversine_distance(latitude, longitude, supplier_location['lat'], supplier_location['lng'])
-        if distance > 10: continue
-        supplier_prefs_dict = {key: getattr(supplier, key, 0) for key in PreferenceVector.model_fields.keys()}
-        supplier_vector = np.array(list(supplier_prefs_dict.values()))
-        dot_product = np.dot(user_vector, supplier_vector)
-        norm_user = np.linalg.norm(user_vector)
-        norm_supplier = np.linalg.norm(supplier_vector)
-        score = 0 if norm_user == 0 or norm_supplier == 0 else dot_product / (norm_user * norm_supplier)
-        match_percentage = int(score * 100)
-        if match_percentage < 40: continue
-        recommendations.append(RecommendationItem(id=f"s{supplier.supplier_id}", name=supplier.name, description=supplier.description, image_url=supplier.image_url, location=Location(**supplier_location), preferences=PreferenceVector(**supplier._mapping), match_score=match_percentage, distance_km=round(distance, 1)))
-    recommendations.sort(key=lambda item: item.match_score, reverse=True)
-    return RecommendationResponse(items=recommendations)
 
+    # 商品とサプライヤーを結合して全商品情報を取得
+    # SQLクエリでp.*のように個別に指定すると、より安全でパフォーマンスも向上します
+    query = text("""
+        SELECT
+            p.product_id, p.name AS product_name, p.description, p.image_url,
+            s.location,
+            p.heritage_soul, p.modern_heirloom, p.folk_heart, p.fresh_folk, 
+            p.masterpiece, p.innovative_classic, p.craft_sense, p.smart_craft, 
+            p.signature_mood, p.iconic_style, p.local_trend, p.playful_pop, 
+            p.design_master, p.global_trend, p.smart_local, p.smart_pick
+        FROM products p
+        JOIN suppliers s ON p.supplier_id = s.supplier_id
+    """)
+    all_products = db.execute(query).fetchall()
+
+    recommendations = []
+    for product in all_products:
+        # サプライヤーの位置情報を取得
+        supplier_location = json.loads(product.location) if isinstance(product.location, str) else product.location
+        if not supplier_location or 'lat' not in supplier_location or 'lng' not in supplier_location:
+            continue
+
+        # 1. 距離を計算し、10km圏外を除外
+        distance = haversine_distance(latitude, longitude, supplier_location['lat'], supplier_location['lng'])
+        if distance > 10:
+            continue
+            
+        # 2. 商品の嗜好ベクトルを生成
+        product_prefs_dict = {key: getattr(product, key, 0) for key in PreferenceVector.model_fields.keys()}
+        product_vector = np.array(list(product_prefs_dict.values()))
+        
+        # 3. マッチ度（コサイン類似度）を計算
+        dot_product = np.dot(user_vector, product_vector)
+        norm_user = np.linalg.norm(user_vector)
+        norm_product = np.linalg.norm(product_vector)
+        
+        score = 0
+        if norm_user > 0 and norm_product > 0:
+            score = dot_product / (norm_user * norm_product)
+        
+        match_percentage = int(score * 100)
+        
+        # 4. マッチ度が40%未満のものを除外
+        if match_percentage < 40:
+            continue
+
+# おすすめリストに追加
+        recommendations.append(RecommendationItem(
+            id=f"p{product.product_id}",
+            name=product.product_name,
+            description=product.description,
+            image_url=product.image_url,
+            location=Location(**supplier_location),
+            # ▼ この行を追加 ▼
+            preferences=PreferenceVector(**product_prefs_dict),
+            match_score=match_percentage,
+            distance_km=round(distance, 1)
+        ))
+        
+    # マッチ度が高い順にソート
+    recommendations.sort(key=lambda item: item.match_score, reverse=True)
+    
+    return RecommendationResponse(items=recommendations)
 @app.post("/favorites")
 def add_to_favorites(request: FavoriteRequest, db: Session = Depends(get_db)):
     item_id_str = request.item_id; user_id = request.user_id
