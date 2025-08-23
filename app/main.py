@@ -2,6 +2,8 @@ import os
 import json
 import math
 import numpy as np
+import traceback 
+from datetime import datetime
 from fastapi import FastAPI, HTTPException, Depends, Form
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import create_engine, text
@@ -195,20 +197,17 @@ def login_for_access_token(username: Annotated[str, Form()], password: Annotated
 
 @app.get("/recommendations", response_model=RecommendationResponse)
 def get_recommendations(user_id: int, latitude: float, longitude: float, db: Session = Depends(get_db)):
-    # ユーザー情報を取得
     user_result = db.execute(text("SELECT * FROM users WHERE user_id = :uid"), {"uid": user_id}).first()
     if not user_result:
         raise HTTPException(status_code=404, detail="User not found")
     
-    # ユーザーの嗜好ベクトルを生成
     user_prefs_dict = {key: getattr(user_result, key, 0) for key in PreferenceVector.model_fields.keys()}
     user_vector = np.array(list(user_prefs_dict.values()))
 
-    # 商品とサプライヤーを結合して全商品情報を取得
-    # SQLクエリでp.*のように個別に指定すると、より安全でパフォーマンスも向上します
+    # ★★★ 1. p.product_code をSELECT文に追加 ★★★
     query = text("""
         SELECT
-            p.product_id, p.name AS product_name, p.description, p.image_url,
+            p.product_id, p.product_code, p.name AS product_name, p.description, p.image_url,
             s.location,
             p.heritage_soul, p.modern_heirloom, p.folk_heart, p.fresh_folk, 
             p.masterpiece, p.innovative_classic, p.craft_sense, p.smart_craft, 
@@ -221,21 +220,17 @@ def get_recommendations(user_id: int, latitude: float, longitude: float, db: Ses
 
     recommendations = []
     for product in all_products:
-        # サプライヤーの位置情報を取得
         supplier_location = json.loads(product.location) if isinstance(product.location, str) else product.location
         if not supplier_location or 'lat' not in supplier_location or 'lng' not in supplier_location:
             continue
 
-        # 1. 距離を計算し、10km圏外を除外
         distance = haversine_distance(latitude, longitude, supplier_location['lat'], supplier_location['lng'])
         if distance > 10:
             continue
             
-        # 2. 商品の嗜好ベクトルを生成
         product_prefs_dict = {key: getattr(product, key, 0) for key in PreferenceVector.model_fields.keys()}
         product_vector = np.array(list(product_prefs_dict.values()))
         
-        # 3. マッチ度（コサイン類似度）を計算
         dot_product = np.dot(user_vector, product_vector)
         norm_user = np.linalg.norm(user_vector)
         norm_product = np.linalg.norm(product_vector)
@@ -246,24 +241,21 @@ def get_recommendations(user_id: int, latitude: float, longitude: float, db: Ses
         
         match_percentage = int(score * 100)
         
-        # 4. マッチ度が40%未満のものを除外
         if match_percentage < 40:
             continue
 
-# おすすめリストに追加
         recommendations.append(RecommendationItem(
-            id=f"p{product.product_id}",
+            # ★★★ 2. idをproduct_codeに変更 ★★★
+            id=product.product_code,
             name=product.product_name,
             description=product.description,
             image_url=product.image_url,
             location=Location(**supplier_location),
-            # ▼ この行を追加 ▼
             preferences=PreferenceVector(**product_prefs_dict),
             match_score=match_percentage,
             distance_km=round(distance, 1)
         ))
         
-    # マッチ度が高い順にソート
     recommendations.sort(key=lambda item: item.match_score, reverse=True)
     
     return RecommendationResponse(items=recommendations)
@@ -282,15 +274,22 @@ def add_to_favorites(request: FavoriteRequest, db: Session = Depends(get_db)):
                 supplier_id_to_save = product_result.supplier_id
             else: raise HTTPException(status_code=404, detail=f"Product with code {item_id_str} not found")
         else: raise HTTPException(status_code=400, detail="Invalid item_id format")
-        query = text("INSERT INTO favorites (user_id, supplier_id, product_id) VALUES (:uid, :sid, :pid)")
-        params = {"uid": user_id, "sid": supplier_id_to_save, "pid": product_id_to_save}
+        
+        query = text("INSERT INTO favorites (user_id, supplier_id, product_id, created_at) VALUES (:uid, :sid, :pid, :cat)")
+        params = {"uid": user_id, "sid": supplier_id_to_save, "pid": product_id_to_save, "cat": datetime.now()}
+        
         db.execute(query, params)
         db.commit()
         return {"message": "Favorite added successfully"}
     except Exception as e:
         db.rollback()
+        # ★★★ 2. エラーの詳細を強制的にプリントする ★★★
+        print("--- DATABASE ERROR TRACEBACK ---")
+        traceback.print_exc()
+        print("---------------------------------")
         if "unique constraint" in str(e).lower(): return {"message": "Item is already in favorites"}
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.post("/destinated")
 def add_to_destinated(request: DestinatedRequest, db: Session = Depends(get_db)):
@@ -307,8 +306,11 @@ def add_to_destinated(request: DestinatedRequest, db: Session = Depends(get_db))
                 supplier_id_to_save = product_result.supplier_id
             else: raise HTTPException(status_code=404, detail=f"Product with code {item_id_str} not found")
         else: raise HTTPException(status_code=400, detail="Invalid item_id format")
-        query = text("INSERT INTO destinated (user_id, supplier_id, product_id) VALUES (:uid, :sid, :pid)")
-        params = {"uid": user_id, "sid": supplier_id_to_save, "pid": product_id_to_save}
+        
+        # created_atカラムを追加し、現在時刻をセットする
+        query = text("INSERT INTO destinated (user_id, supplier_id, product_id, created_at) VALUES (:uid, :sid, :pid, :cat)")
+        params = {"uid": user_id, "sid": supplier_id_to_save, "pid": product_id_to_save, "cat": datetime.now()}
+        
         db.execute(query, params)
         db.commit()
         return {"message": "Destinated item added successfully"}
@@ -316,3 +318,4 @@ def add_to_destinated(request: DestinatedRequest, db: Session = Depends(get_db))
         db.rollback()
         if "unique constraint" in str(e).lower(): return {"message": "Item is already in destinated list"}
         raise HTTPException(status_code=500, detail=str(e))
+
