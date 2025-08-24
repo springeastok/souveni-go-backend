@@ -12,8 +12,12 @@ from pydantic import BaseModel, Field
 from typing import List, Optional, Annotated
 from dotenv import load_dotenv
 
-# 環境変数を読み込み
-load_dotenv()
+# 環境変数を読み込み（.envファイルが存在する場合のみ）
+try:
+    load_dotenv()
+except Exception:
+    # Azure App Service等では.envファイルがないため、環境変数から直接読み込み
+    pass
 
 # --- データベース設定 ---
 def get_database_url():
