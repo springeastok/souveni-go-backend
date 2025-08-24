@@ -31,3 +31,13 @@ data/*.db
 
 # Logs
 *.log
+
+# SSL certificates and keys
+*.pem
+*.key
+*.crt
+
+# Test and debug files
+test_api.py
+*_test.py
+debug_*

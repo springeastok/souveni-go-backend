@@ -5,6 +5,8 @@ uvicorn[standard]==0.30.6
 # Database
 sqlalchemy==2.0.35
 pyodbc==5.1.0
+pymysql==1.1.1
+cryptography==42.0.8
 
 # Authentication
 python-jose[cryptography]==3.3.0

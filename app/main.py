@@ -10,11 +10,38 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker, Session
 from pydantic import BaseModel, Field
 from typing import List, Optional, Annotated
+from dotenv import load_dotenv
+
+# 環境変数を読み込み
+load_dotenv()
 
 # --- データベース設定 ---
-DB_FILENAME = "souveni_go.db"
-DATABASE_URL = f"sqlite:///{DB_FILENAME}"
-engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+def get_database_url():
+    """環境に応じたデータベースURL を取得"""
+    dev_mode = os.getenv('DEV_MODE', 'false').lower() == 'true'
+    
+    if dev_mode:
+        # 開発環境：SQLite
+        return f"sqlite:///souveni_go.db"
+    else:
+        # 本番環境：Azure MySQL
+        host = os.getenv('MYSQL_HOST')
+        port = os.getenv('MYSQL_PORT', '3306')
+        user = os.getenv('MYSQL_USER')
+        password = os.getenv('MYSQL_PASSWORD')
+        database = os.getenv('MYSQL_DATABASE')
+        
+        if not all([host, user, password, database]):
+            raise ValueError("MySQL接続情報が設定されていません。.envファイルを確認してください。")
+        
+        # Azure MySQLの接続URL（SSL設定を調整）
+        return f"mysql+pymysql://{user}:{password}@{host}:{port}/{database}?charset=utf8mb4&ssl=true&ssl_verify_cert=false&ssl_verify_identity=false"
+
+DATABASE_URL = get_database_url()
+
+# SQLite用の設定はMySQLでは不要
+connect_args = {"check_same_thread": False} if "sqlite" in DATABASE_URL else {}
+engine = create_engine(DATABASE_URL, connect_args=connect_args, pool_pre_ping=True)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 app = FastAPI()
 
@@ -165,12 +192,67 @@ def setup_user_profile(request: ProfileSetupRequest, db: Session = Depends(get_d
 
 @app.get("/preferences/selection", response_model=SelectionResponse)
 def get_items_for_selection(db: Session = Depends(get_db)):
-    supplier_query = text("SELECT supplier_id, name, description, image_url, heritage_soul, modern_heirloom, folk_heart, fresh_folk, masterpiece, innovative_classic, craft_sense, smart_craft, signature_mood, iconic_style, local_trend, playful_pop, design_master, global_trend, smart_local, smart_pick FROM suppliers ORDER BY RANDOM() LIMIT 3")
+    supplier_query = text("SELECT supplier_id, name, description, image_url, heritage_soul, modern_heirloom, folk_heart, fresh_folk, masterpiece, innovative_classic, craft_sense, smart_craft, signature_mood, iconic_style, local_trend, playful_pop, design_master, global_trend, smart_local, smart_pick FROM suppliers ORDER BY RAND() LIMIT 3")
     suppliers_result = db.execute(supplier_query).fetchall()
-    product_query = text("SELECT product_code, name, description, image_url, heritage_soul, modern_heirloom, folk_heart, fresh_folk, masterpiece, innovative_classic, craft_sense, smart_craft, signature_mood, iconic_style, local_trend, playful_pop, design_master, global_trend, smart_local, smart_pick FROM products ORDER BY RANDOM() LIMIT 3")
+    product_query = text("SELECT product_code, name, description, image_url, heritage_soul, modern_heirloom, folk_heart, fresh_folk, masterpiece, innovative_classic, craft_sense, smart_craft, signature_mood, iconic_style, local_trend, playful_pop, design_master, global_trend, smart_local, smart_pick FROM products ORDER BY RAND() LIMIT 3")
     products_result = db.execute(product_query).fetchall()
-    suppliers = [Item(id=f"s{row.supplier_id}", name=row.name, description=row.description, image_url=row.image_url, preferences=PreferenceVector(**row._mapping)) for row in suppliers_result]
-    products = [Item(id=row.product_code, name=row.name, description=row.description, image_url=row.image_url, preferences=PreferenceVector(**row._mapping)) for row in products_result]
+    # Suppliersの変換（_mappingの代わりに個別のカラムを指定）
+    suppliers = []
+    for row in suppliers_result:
+        pref_dict = {
+            'heritage_soul': row.heritage_soul or 0,
+            'modern_heirloom': row.modern_heirloom or 0,
+            'folk_heart': row.folk_heart or 0,
+            'fresh_folk': row.fresh_folk or 0,
+            'masterpiece': row.masterpiece or 0,
+            'innovative_classic': row.innovative_classic or 0,
+            'craft_sense': row.craft_sense or 0,
+            'smart_craft': row.smart_craft or 0,
+            'signature_mood': row.signature_mood or 0,
+            'iconic_style': row.iconic_style or 0,
+            'local_trend': row.local_trend or 0,
+            'playful_pop': row.playful_pop or 0,
+            'design_master': row.design_master or 0,
+            'global_trend': row.global_trend or 0,
+            'smart_local': row.smart_local or 0,
+            'smart_pick': row.smart_pick or 0
+        }
+        suppliers.append(Item(
+            id=f"s{row.supplier_id}",
+            name=row.name,
+            description=row.description,
+            image_url=row.image_url,
+            preferences=PreferenceVector(**pref_dict)
+        ))
+    
+    # Productsの変換（_mappingの代わりに個別のカラムを指定）
+    products = []
+    for row in products_result:
+        pref_dict = {
+            'heritage_soul': row.heritage_soul or 0,
+            'modern_heirloom': row.modern_heirloom or 0,
+            'folk_heart': row.folk_heart or 0,
+            'fresh_folk': row.fresh_folk or 0,
+            'masterpiece': row.masterpiece or 0,
+            'innovative_classic': row.innovative_classic or 0,
+            'craft_sense': row.craft_sense or 0,
+            'smart_craft': row.smart_craft or 0,
+            'signature_mood': row.signature_mood or 0,
+            'iconic_style': row.iconic_style or 0,
+            'local_trend': row.local_trend or 0,
+            'playful_pop': row.playful_pop or 0,
+            'design_master': row.design_master or 0,
+            'global_trend': row.global_trend or 0,
+            'smart_local': row.smart_local or 0,
+            'smart_pick': row.smart_pick or 0
+        }
+        products.append(Item(
+            id=row.product_code,
+            name=row.name,
+            description=row.description,
+            image_url=row.image_url,
+            preferences=PreferenceVector(**pref_dict)
+        ))
     return SelectionResponse(suppliers=suppliers, products=products)
 
 @app.post("/users/preferences")
